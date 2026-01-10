@@ -8,6 +8,28 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wadeherp
+          POSTGRES_PASSWORD: wadeherp
+          POSTGRES_DB: wadeherp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U wadeherp -d wadeherp"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://wadeherp:wadeherp@localhost:5432/wadeherp?schema=public
+      PORT: 4000
+      CORS_ORIGIN: http://localhost:3000
+      NODE_ENV: test
+
     steps:
       - uses: actions/checkout@v4
 
@@ -19,20 +41,18 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Activate pnpm (from packageManager)
+      - name: Activate pnpm
         run: corepack prepare pnpm@10.26.1 --activate
-
-      - name: Show versions
-        run: |
-          node --version
-          pnpm --version
 
       - name: Install
         run: pnpm i
 
-
       - name: Prisma generate (api)
         run: pnpm --filter api prisma:generate
+
+      - name: Prisma migrate (api)
+        run: pnpm --filter api prisma:migrate
+
       - name: Typecheck
         run: pnpm -r typecheck
 
