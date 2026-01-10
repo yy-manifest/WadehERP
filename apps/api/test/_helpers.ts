@@ -8,15 +8,14 @@ export async function makeApp() {
 }
 
 export async function resetDb() {
-  await prisma.session.deleteMany({});
-  await prisma.auditEvent.deleteMany({});
-  await prisma.user.deleteMany({});
-  await prisma.tenant.deleteMany({});
+  // Use TRUNCATE so AuditEvent immutability triggers (DELETE/UPDATE) don't break test cleanup.
+  // TRUNCATE does not fire DELETE triggers in Postgres.
+  await prisma.$executeRawUnsafe(
+    'TRUNCATE TABLE "Session", "AuditEvent", "User", "Tenant" RESTART IDENTITY CASCADE;'
+  );
 }
 
 export async function closeAll(app: any) {
-  if (app) {
-    await app.close();
-  }
+  if (app) await app.close();
   await prisma.$disconnect();
 }
