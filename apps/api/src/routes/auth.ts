@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
+
 import { prisma } from "../db";
-import type { Prisma } from "/client";
 import { randomToken, sha256Hex } from "../lib/crypto";
-import { audit } from "../lib/audit";
 import { requireAuth } from "../lib/auth";
 
 const SignupBody = z.object({
@@ -36,20 +36,11 @@ export async function authRoutes(app: FastifyInstance) {
       });
 
       const user = await tx.user.create({
-        data: {
-          tenantId: tenant.id,
-          email,
-          passwordHash,
-        },
+        data: { tenantId: tenant.id, email, passwordHash },
       });
 
       const session = await tx.session.create({
-        data: {
-          tenantId: tenant.id,
-          userId: user.id,
-          tokenHash,
-          expiresAt,
-        },
+        data: { tenantId: tenant.id, userId: user.id, tokenHash, expiresAt },
       });
 
       await tx.auditEvent.create({
@@ -68,7 +59,6 @@ export async function authRoutes(app: FastifyInstance) {
       return { tenant, user, session };
     });
 
-    // Return token ONCE (client stores it and uses Authorization: Bearer <token>)
     return reply.code(201).send({
       tenantId: result.tenant.id,
       user: { id: result.user.id, email: result.user.email },
@@ -89,9 +79,6 @@ export async function authRoutes(app: FastifyInstance) {
       err.statusCode = 401;
       throw err;
     }
-
-    // Example audit for reads can be optional; keep minimal for M0.1
-    // await audit({ tenantId: user.tenantId, actorUserId: user.id, action: "auth.me", req });
 
     return { user };
   });
