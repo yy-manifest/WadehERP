@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../db";
+import type { Prisma } from "/client";
 import { randomToken, sha256Hex } from "../lib/crypto";
 import { audit } from "../lib/audit";
 import { requireAuth } from "../lib/auth";
@@ -22,7 +23,7 @@ export async function authRoutes(app: FastifyInstance) {
     const tokenHash = sha256Hex(token);
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30); // 30 days
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const existing = await tx.user.findUnique({ where: { email } });
       if (existing) {
         const err: any = new Error("email_already_exists");
