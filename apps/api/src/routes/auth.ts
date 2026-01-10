@@ -6,6 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { randomToken, sha256Hex } from "../lib/crypto";
 import { requireAuth } from "../lib/auth";
+import { audit } from "../lib/audit";
 
 const SignupBody = z.object({
   email: z.string().email(),
@@ -64,6 +65,31 @@ export async function authRoutes(app: FastifyInstance) {
       user: { id: result.user.id, email: result.user.email },
       session: { token, expiresAt: result.session.expiresAt.toISOString() },
     });
+  });
+
+  app.post("/auth/logout", async (req, reply) => {
+    requireAuth(req);
+
+    await prisma.session.updateMany({
+      where: {
+        id: req.auth!.sessionId,
+        tenantId: req.auth!.tenantId,
+        userId: req.auth!.userId,
+        revokedAt: null,
+      },
+      data: { revokedAt: new Date() },
+    });
+
+    await audit({
+      tenantId: req.auth!.tenantId,
+      actorUserId: req.auth!.userId,
+      action: "auth.logout",
+      entityType: "Session",
+      entityId: req.auth!.sessionId,
+      req,
+    });
+
+    return reply.code(204).send();
   });
 
   app.get("/me", async (req) => {
