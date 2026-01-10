@@ -7,11 +7,17 @@ import { attachAuth } from "./lib/auth";
 import { healthRoutes } from "./routes/health";
 import { authRoutes } from "./routes/auth";
 
+function getLoggerConfig() {
+  // Tests: no logger to keep output clean and avoid transports
+  if (process.env.NODE_ENV === "test") return false;
+
+  // Dev/prod: plain logger (no pino-pretty dependency)
+  return true;
+}
+
 export function buildApp() {
   const app = Fastify({
-    logger: {
-      transport: process.env.NODE_ENV === "production" ? undefined : { target: "pino-pretty" },
-    },
+    logger: getLoggerConfig(),
   });
 
   app.register(helmet);
