@@ -1,0 +1,7 @@
+# Global owners (you can change later)
+* @yy-manifest
+
+# Extra gates (future: map to real reviewers)
+docs/POSTING_RULES.md @yy-manifest
+docs/SECURITY_BASELINE.md @yy-manifest
+apps/api/prisma/** @yy-manifest
