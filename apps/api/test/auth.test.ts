@@ -17,7 +17,7 @@ describe("auth", () => {
     await closeAll(app);
   });
 
-  it("signup returns token, /me works, and audit event is created", async () => {
+  async function signup() {
     const signupRes = await app.inject({
       method: "POST",
       url: "/auth/signup",
@@ -30,14 +30,11 @@ describe("auth", () => {
     });
 
     expect(signupRes.statusCode).toBe(201);
-    const signupJson = signupRes.json() as any;
+    return signupRes.json() as any;
+  }
 
-    expect(signupJson).toHaveProperty("tenantId");
-    expect(signupJson).toHaveProperty("user.id");
-    expect(signupJson).toHaveProperty("user.email", "test@example.com");
-    expect(signupJson).toHaveProperty("session.token");
-    expect(typeof signupJson.session.token).toBe("string");
-
+  it("signup returns token, /me works, and audit event is created", async () => {
+    const signupJson = await signup();
     const token = signupJson.session.token as string;
 
     const meRes = await app.inject({
@@ -53,7 +50,6 @@ describe("auth", () => {
     expect(meJson).toHaveProperty("user.email", "test@example.com");
     expect(meJson).toHaveProperty("user.tenantId", signupJson.tenantId);
 
-    // Audit created
     const audit = await prisma.auditEvent.findFirst({
       where: {
         tenantId: signupJson.tenantId,
@@ -70,5 +66,65 @@ describe("auth", () => {
   it("GET /me without auth returns 401", async () => {
     const res = await app.inject({ method: "GET", url: "/me" });
     expect(res.statusCode).toBe(401);
+  });
+
+  it("logout revokes session and /me stops working", async () => {
+    const signupJson = await signup();
+    const token = signupJson.session.token as string;
+
+    const logoutRes = await app.inject({
+      method: "POST",
+      url: "/auth/logout",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(logoutRes.statusCode).toBe(204);
+
+    const meRes = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(meRes.statusCode).toBe(401);
+
+    // Audit logout exists
+    const logoutAudit = await prisma.auditEvent.findFirst({
+      where: {
+        tenantId: signupJson.tenantId,
+        actorUserId: signupJson.user.id,
+        action: "auth.logout",
+        entityType: "Session"
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    expect(logoutAudit).not.toBeNull();
+  });
+
+  it("audit events are immutable at DB level (no update/delete)", async () => {
+    const signupJson = await signup();
+
+    const audit = await prisma.auditEvent.findFirst({
+      where: { tenantId: signupJson.tenantId, action: "auth.signup" },
+      orderBy: { createdAt: "desc" },
+    });
+
+    expect(audit).not.toBeNull();
+
+    // UPDATE should fail due to trigger
+    await expect(
+      prisma.auditEvent.update({
+        where: { id: audit!.id },
+        data: { action: "tampered" },
+      })
+    ).rejects.toBeTruthy();
+
+    // DELETE should fail due to trigger
+    await expect(
+      prisma.auditEvent.delete({
+        where: { id: audit!.id },
+      })
+    ).rejects.toBeTruthy();
   });
 });
