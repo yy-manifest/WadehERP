@@ -7,6 +7,8 @@ import { ZodError } from "zod";
 import { attachAuth } from "./lib/auth";
 import { healthRoutes } from "./routes/health";
 import { authRoutes } from "./routes/auth";
+import { itemRoutes } from "./routes/items";
+import { inventoryRoutes } from "./routes/inventory";
 
 function getLoggerConfig() {
   // Tests: no logger to keep output clean and avoid transports
@@ -53,6 +55,8 @@ export function buildApp() {
 
   app.register(healthRoutes);
   app.register(authRoutes);
+  app.register(itemRoutes);
+  app.register(inventoryRoutes);
 
   return app;
 }

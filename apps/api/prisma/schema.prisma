@@ -11,9 +11,13 @@ model Tenant {
   name      String
   createdAt DateTime @default(now())
 
-  users      User[]
-  sessions   Session[]
-  auditEvents AuditEvent[]
+  users              User[]
+  sessions           Session[]
+  auditEvents        AuditEvent[]
+  tenantSettings     TenantSetting[]
+  items              Item[]
+  inventoryBalances  InventoryBalance[]
+  inventoryMovements InventoryMovement[]
 }
 
 model User {
@@ -23,7 +27,7 @@ model User {
   passwordHash String
   createdAt    DateTime @default(now())
 
-  tenant      Tenant  @relation(fields: [tenantId], references: [id])
+  tenant      Tenant       @relation(fields: [tenantId], references: [id])
   sessions    Session[]
   auditEvents AuditEvent[] @relation("AuditActor")
 
@@ -31,11 +35,11 @@ model User {
 }
 
 model Session {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   tenantId  String
   userId    String
-  tokenHash String   @unique
-  createdAt DateTime @default(now())
+  tokenHash String    @unique
+  createdAt DateTime  @default(now())
   expiresAt DateTime
   revokedAt DateTime?
 
@@ -64,4 +68,72 @@ model AuditEvent {
   @@index([tenantId])
   @@index([actorUserId])
   @@index([action])
+}
+
+enum InventoryMoveType {
+  ADJUSTMENT
+}
+
+model TenantSetting {
+  tenantId           String  @id
+  allowNegativeStock Boolean @default(false)
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
+}
+
+model Item {
+  id       String  @id @default(cuid())
+  tenantId String
+  sku      String
+  nameEn   String
+  nameAr   String?
+  isStock  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant  Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  balance InventoryBalance?
+  moves   InventoryMovement[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId])
+}
+
+model InventoryBalance {
+  id       String @id @default(cuid())
+  tenantId String
+  itemId   String @unique
+
+  // store as BigInt to avoid float issues
+  qtyOnHand    BigInt @default(0)
+  avgCostMinor BigInt @default(0) // weighted average cost in minor units (cents/halalas/etc)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  item   Item   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+model InventoryMovement {
+  id       String            @id @default(cuid())
+  tenantId String
+  itemId   String
+  type     InventoryMoveType
+
+  qtyDelta      BigInt
+  unitCostMinor BigInt? // required for inbound adjustments, optional for outbound
+  note          String?
+
+  actorUserId String?
+  createdAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  item   Item   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, itemId, createdAt])
 }
