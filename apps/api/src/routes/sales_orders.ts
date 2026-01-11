@@ -190,7 +190,20 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     const userId = req.auth!.userId;
     const id = (req.params as any).id as string;
 
-    const allowNegRow = await prisma.tenantSetting.findFirst({
+    
+    const existing = await prisma.salesOrder.findFirst({
+      where: { tenantId, id },
+      select: { id: true, status: true, confirmedAt: true },
+    });
+    if (!existing) return reply.code(404).send({ error: "not_found" });
+    if (existing.status === "CONFIRMED") {
+      return reply.code(200).send({ id: existing.id, status: existing.status, confirmedAt: existing.confirmedAt });
+    }
+    if (existing.status === "CANCELLED") {
+      return reply.code(409).send({ error: "conflict", message: "sales order is cancelled" });
+    }
+
+const allowNegRow = await prisma.tenantSetting.findFirst({
       where: { tenantId },
       select: { allowNegativeStock: true },
     });
@@ -286,7 +299,17 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     const userId = req.auth!.userId;
     const id = (req.params as any).id as string;
 
-    const result = await prisma.$transaction(async (tx) => {
+    
+    const existing = await prisma.salesOrder.findFirst({
+      where: { tenantId, id },
+      select: { id: true, status: true, cancelledAt: true },
+    });
+    if (!existing) return reply.code(404).send({ error: "not_found" });
+    if (existing.status === "CANCELLED") {
+      return reply.code(200).send({ id: existing.id, status: existing.status, cancelledAt: existing.cancelledAt });
+    }
+
+const result = await prisma.$transaction(async (tx) => {
       const so = await tx.salesOrder.findFirst({ where: { tenantId, id } });
       if (!so) return { kind: "not_found" as const };
       if (so.status === "CANCELLED") return { kind: "conflict" as const, message: "sales order already cancelled" };

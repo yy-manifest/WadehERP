@@ -9,6 +9,7 @@ import { healthRoutes } from "./routes/health";
 import { authRoutes } from "./routes/auth";
 import { itemRoutes } from "./routes/items";
 import { inventoryRoutes } from "./routes/inventory";
+import { availabilityRoutes } from "./routes/availability";
 import { settingsRoutes } from "./routes/settings";
 import { salesOrdersRoutes } from "./routes/sales_orders";
 function getLoggerConfig() {
@@ -58,6 +59,7 @@ export function buildApp() {
   app.register(authRoutes);
   app.register(itemRoutes);
   app.register(inventoryRoutes);
+  app.register(availabilityRoutes);
   app.register(settingsRoutes);
   app.register(salesOrdersRoutes);
 
