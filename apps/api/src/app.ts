@@ -10,7 +10,7 @@ import { authRoutes } from "./routes/auth";
 import { itemRoutes } from "./routes/items";
 import { inventoryRoutes } from "./routes/inventory";
 import { settingsRoutes } from "./routes/settings";
-
+import { salesOrdersRoutes } from "./routes/sales_orders";
 function getLoggerConfig() {
   // Tests: no logger to keep output clean and avoid transports
   if (process.env.NODE_ENV === "test") return false;
@@ -59,6 +59,8 @@ export function buildApp() {
   app.register(itemRoutes);
   app.register(inventoryRoutes);
   app.register(settingsRoutes);
+  app.register(salesOrdersRoutes);
+
 
   return app;
 }

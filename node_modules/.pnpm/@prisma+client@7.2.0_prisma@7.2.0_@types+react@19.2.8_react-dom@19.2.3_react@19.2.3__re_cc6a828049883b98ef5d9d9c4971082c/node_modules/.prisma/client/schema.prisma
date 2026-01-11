@@ -6,18 +6,31 @@ datasource db {
   provider = "postgresql"
 }
 
+enum SalesOrderStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+enum ReservationStatus {
+  ACTIVE
+  CANCELLED
+}
+
 model Tenant {
   id        String   @id @default(cuid())
   name      String
   createdAt DateTime @default(now())
 
-  users              User[]
-  sessions           Session[]
-  auditEvents        AuditEvent[]
-  tenantSettings     TenantSetting[]
-  items              Item[]
-  inventoryBalances  InventoryBalance[]
-  inventoryMovements InventoryMovement[]
+  users                 User[]
+  sessions              Session[]
+  auditEvents           AuditEvent[]
+  tenantSettings        TenantSetting[]
+  items                 Item[]
+  inventoryBalances     InventoryBalance[]
+  inventoryMovements    InventoryMovement[]
+  salesOrders           SalesOrder[]
+  inventoryReservations InventoryReservation[]
 }
 
 model User {
@@ -93,9 +106,11 @@ model Item {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant  Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  balance InventoryBalance?
-  moves   InventoryMovement[]
+  tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  balance               InventoryBalance?
+  moves                 InventoryMovement[]
+  salesOrderLines       SalesOrderLine[]
+  inventoryReservations InventoryReservation[]
 
   @@unique([tenantId, sku])
   @@index([tenantId])
@@ -108,6 +123,7 @@ model InventoryBalance {
 
   // store as BigInt to avoid float issues
   qtyOnHand    BigInt @default(0)
+  qtyReserved  BigInt @default(0)
   avgCostMinor BigInt @default(0) // weighted average cost in minor units (cents/halalas/etc)
 
   createdAt DateTime @default(now())
@@ -136,4 +152,59 @@ model InventoryMovement {
   item   Item   @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, itemId, createdAt])
+}
+
+model SalesOrder {
+  id          String           @id @default(cuid())
+  tenantId    String
+  status      SalesOrderStatus @default(DRAFT)
+  notes       String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  confirmedAt DateTime?
+  cancelledAt DateTime?
+
+  tenant       Tenant                 @relation(fields: [tenantId], references: [id])
+  lines        SalesOrderLine[]
+  reservations InventoryReservation[]
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status])
+}
+
+model SalesOrderLine {
+  id           String   @id @default(cuid())
+  tenantId     String
+  salesOrderId String
+  itemId       String
+  qty          BigInt
+  createdAt    DateTime @default(now())
+
+  salesOrder   SalesOrder             @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  item         Item                   @relation(fields: [itemId], references: [id])
+  reservations InventoryReservation[]
+
+  @@index([tenantId, salesOrderId])
+  @@index([tenantId, itemId])
+}
+
+model InventoryReservation {
+  id               String            @id @default(cuid())
+  tenantId         String
+  salesOrderId     String
+  salesOrderLineId String
+  itemId           String
+  qty              BigInt
+  status           ReservationStatus @default(ACTIVE)
+  createdAt        DateTime          @default(now())
+  cancelledAt      DateTime?
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id])
+  salesOrder     SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  salesOrderLine SalesOrderLine @relation(fields: [salesOrderLineId], references: [id], onDelete: Cascade)
+  item           Item           @relation(fields: [itemId], references: [id])
+
+  @@unique([tenantId, salesOrderLineId])
+  @@index([tenantId, itemId])
+  @@index([tenantId, salesOrderId])
 }
