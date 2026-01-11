@@ -102,22 +102,87 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
 
     if (!so) return reply.code(404).send({ error: "not_found" });
 
+    const reservations = await prisma.inventoryReservation.findMany({
+      where: { tenantId, salesOrderId: so.id },
+      select: { salesOrderLineId: true, qty: true, status: true },
+    });
+
+    const byLine = new Map<string, { activeSum: bigint; hasCancelled: boolean }>();
+    for (const r of reservations) {
+      const cur = byLine.get(r.salesOrderLineId) ?? { activeSum: 0n, hasCancelled: false };
+      if (r.status === "ACTIVE") cur.activeSum = cur.activeSum + BigInt(r.qty);
+      if (r.status === "CANCELLED") cur.hasCancelled = true;
+      byLine.set(r.salesOrderLineId, cur);
+    }
+
     return reply.send({
-      id: so.id,
-      status: so.status,
-      notes: so.notes,
-      createdAt: so.createdAt,
-      confirmedAt: so.confirmedAt,
-      cancelledAt: so.cancelledAt,
-      lines: so.lines.map((l: any) => ({
-        id: l.id,
-        itemId: l.itemId,
-        qty: l.qty.toString(),
-      })),
+      salesOrder: {
+        id: so.id,
+        status: so.status,
+        notes: so.notes,
+        createdAt: so.createdAt,
+        confirmedAt: so.confirmedAt,
+        cancelledAt: so.cancelledAt,
+        lines: so.lines.map((l: any) => {
+          const agg = byLine.get(l.id) ?? { activeSum: 0n, hasCancelled: false };
+          const reservedQty = agg.activeSum;
+          const reservationStatus = reservedQty > 0n ? "ACTIVE" : agg.hasCancelled ? "CANCELLED" : "NONE";
+          return {
+            id: l.id,
+            itemId: l.itemId,
+            qty: l.qty.toString(),
+            reservedQty: reservedQty.toString(),
+            reservationStatus,
+          };
+        }),
+      },
     });
   });
 
   // CONFIRM (RESERVE)
+  app.get("/sales-orders", async (req) => {
+    requireAuth(req);
+
+    const tenantId = req.auth!.tenantId;
+    const q: any = req.query ?? {};
+
+    const limitRaw = q.limit;
+    const limit = Math.max(1, Math.min(50, Number.isFinite(Number(limitRaw)) ? Number(limitRaw) : 20));
+
+    const where: any = { tenantId };
+    if (q.status && ["DRAFT", "CONFIRMED", "CANCELLED"].includes(String(q.status))) {
+      where.status = String(q.status);
+    }
+
+    const rows = await prisma.salesOrder.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        status: true,
+        notes: true,
+        createdAt: true,
+        confirmedAt: true,
+        cancelledAt: true,
+        _count: { select: { lines: true } },
+      },
+    });
+
+    return {
+      items: rows.map((r: any) => ({
+        id: r.id,
+        status: r.status,
+        notes: r.notes,
+        createdAt: r.createdAt,
+        confirmedAt: r.confirmedAt,
+        cancelledAt: r.cancelledAt,
+        linesCount: r._count.lines,
+      })),
+      limit,
+    };
+  });
+
   app.post("/sales-orders/:id/confirm", async (req, reply) => {
     requireAuth(req);
 
