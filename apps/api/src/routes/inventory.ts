@@ -12,12 +12,105 @@ function toBigInt(n: unknown) {
 
 const AdjustBody = z.object({
   itemId: z.string().min(1),
-  qtyDelta: z.union([z.number(), z.string()]),          // allow "5" or 5
+  qtyDelta: z.union([z.number(), z.string()]), // allow "5" or 5
   unitCostMinor: z.union([z.number(), z.string()]).optional(), // required if qtyDelta > 0
   note: z.string().max(500).optional(),
 });
 
+const ItemIdParams = z.object({
+  itemId: z.string().min(1),
+});
+
+const MovementsQuery = z.object({
+  limit: z
+    .union([z.string(), z.number()])
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return 50;
+      const n = typeof v === "number" ? v : Number(v);
+      if (!Number.isFinite(n)) return 50;
+      return Math.max(1, Math.min(100, Math.trunc(n)));
+    }),
+});
+
 export async function inventoryRoutes(app: FastifyInstance) {
+  // Read: balance
+  app.get("/items/:itemId/balance", async (req, reply) => {
+    requireAuth(req);
+
+    const tenantId = req.auth!.tenantId;
+    const { itemId } = ItemIdParams.parse(req.params);
+
+    const item = await prisma.item.findFirst({
+      where: { id: itemId, tenantId },
+      select: { id: true, isStock: true },
+    });
+
+    if (!item) return reply.code(404).send({ error: "item_not_found" });
+    if (!item.isStock) return reply.code(400).send({ error: "item_is_not_stock_tracked" });
+
+    const bal = await prisma.inventoryBalance.findFirst({
+      where: { tenantId, itemId },
+      select: { qtyOnHand: true, avgCostMinor: true, updatedAt: true },
+    });
+
+    if (!bal) return reply.code(500).send({ error: "inventory_balance_missing" });
+
+    return reply.code(200).send({
+      balance: {
+        itemId,
+        qtyOnHand: bal.qtyOnHand.toString(),
+        avgCostMinor: bal.avgCostMinor.toString(),
+        updatedAt: bal.updatedAt,
+      },
+    });
+  });
+
+  // Read: movements (newest first)
+  app.get("/items/:itemId/movements", async (req, reply) => {
+    requireAuth(req);
+
+    const tenantId = req.auth!.tenantId;
+    const { itemId } = ItemIdParams.parse(req.params);
+    const { limit } = MovementsQuery.parse(req.query ?? {});
+
+    const item = await prisma.item.findFirst({
+      where: { id: itemId, tenantId },
+      select: { id: true, isStock: true },
+    });
+
+    if (!item) return reply.code(404).send({ error: "item_not_found" });
+    if (!item.isStock) return reply.code(400).send({ error: "item_is_not_stock_tracked" });
+
+    const moves = await prisma.inventoryMovement.findMany({
+      where: { tenantId, itemId },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        type: true,
+        qtyDelta: true,
+        unitCostMinor: true,
+        note: true,
+        actorUserId: true,
+        createdAt: true,
+      },
+    });
+
+    return reply.code(200).send({
+      movements: moves.map((m) => ({
+        id: m.id,
+        type: m.type,
+        qtyDelta: m.qtyDelta.toString(),
+        unitCostMinor: m.unitCostMinor === null ? null : m.unitCostMinor.toString(),
+        note: m.note,
+        actorUserId: m.actorUserId,
+        createdAt: m.createdAt,
+      })),
+    });
+  });
+
+  // Write: adjustment
   app.post("/inventory/adjust", async (req, reply) => {
     requireAuth(req);
 
@@ -89,7 +182,6 @@ export async function inventoryRoutes(app: FastifyInstance) {
 
       // Weighted average update only for inbound adjustments
       if (qtyDelta > 0n && unitCostMinor !== undefined) {
-        // newAvg = (oldQty*oldAvg + inQty*inCost) / newQty
         const oldValue = bal.qtyOnHand * bal.avgCostMinor;
         const inValue = qtyDelta * unitCostMinor;
         newAvg = newQty === 0n ? 0n : (oldValue + inValue) / newQty;
@@ -130,7 +222,6 @@ export async function inventoryRoutes(app: FastifyInstance) {
       return { updatedBalance, moveId: move.id };
     });
 
-    // Return bigint as strings to be JSON-safe
     return reply.code(200).send({
       balance: {
         itemId: result.updatedBalance.itemId,
