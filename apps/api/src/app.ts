@@ -9,6 +9,7 @@ import { healthRoutes } from "./routes/health";
 import { authRoutes } from "./routes/auth";
 import { itemRoutes } from "./routes/items";
 import { inventoryRoutes } from "./routes/inventory";
+import { settingsRoutes } from "./routes/settings";
 
 function getLoggerConfig() {
   // Tests: no logger to keep output clean and avoid transports
@@ -57,6 +58,7 @@ export function buildApp() {
   app.register(authRoutes);
   app.register(itemRoutes);
   app.register(inventoryRoutes);
+  app.register(settingsRoutes);
 
   return app;
 }
