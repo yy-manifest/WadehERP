@@ -204,7 +204,7 @@ model InventoryReservation {
   salesOrderLine SalesOrderLine @relation(fields: [salesOrderLineId], references: [id], onDelete: Cascade)
   item           Item           @relation(fields: [itemId], references: [id])
 
-  @@unique([tenantId, salesOrderLineId])
+@@unique([tenantId, salesOrderLineId], name: "uniq_reservation_line")
   @@index([tenantId, itemId])
   @@index([tenantId, salesOrderId])
 }

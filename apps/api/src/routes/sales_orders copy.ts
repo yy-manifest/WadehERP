@@ -42,8 +42,8 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "bad_request", message: "one or more itemId are invalid for this tenant" });
     }
 
-    const created = await prisma.$transaction(async (tx) => {
-      const so = await tx.salesOrder.create({
+    const so = await prisma.$transaction(async (tx) => {
+      const created = await tx.salesOrder.create({
         data: {
           tenantId,
           status: "DRAFT",
@@ -65,23 +65,22 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
           actorUserId: userId,
           action: "sales_order.create",
           entityType: "SalesOrder",
-          entityId: so.id,
+          entityId: created.id,
           ip: ipFromReq(req),
           userAgent: (req.headers["user-agent"] as string | undefined) ?? null,
-          meta: { linesCount: so.lines.length },
+          meta: { linesCount: created.lines.length },
         },
       });
 
-      return so;
+      return created;
     });
 
-    // Tests accept either {id} or {salesOrder:{id}}, so we return root id for simplicity.
     return reply.code(201).send({
-      id: created.id,
-      status: created.status,
-      notes: created.notes,
-      createdAt: created.createdAt,
-      lines: created.lines.map((l: any) => ({
+      id: so.id,
+      status: so.status,
+      notes: so.notes,
+      createdAt: so.createdAt,
+      lines: so.lines.map((l: any) => ({
         id: l.id,
         itemId: l.itemId,
         qty: l.qty.toString(),
@@ -89,7 +88,7 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     });
   });
 
-  // READ (single)
+  // READ
   app.get("/sales-orders/:id", async (req, reply) => {
     requireAuth(req);
 
@@ -140,7 +139,7 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     });
   });
 
-  // READ (list)
+  // CONFIRM (RESERVE)
   app.get("/sales-orders", async (req) => {
     requireAuth(req);
 
@@ -184,7 +183,6 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     };
   });
 
-  // CONFIRM (RESERVE)
   app.post("/sales-orders/:id/confirm", async (req, reply) => {
     requireAuth(req);
 
@@ -192,16 +190,27 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     const userId = req.auth!.userId;
     const id = (req.params as any).id as string;
 
-    const allowNegRow = await prisma.tenantSetting.findFirst({
+    
+    const existing = await prisma.salesOrder.findFirst({
+      where: { tenantId, id },
+      select: { id: true, status: true, confirmedAt: true },
+    });
+    if (!existing) return reply.code(404).send({ error: "not_found" });
+    if (existing.status === "CONFIRMED") {
+      return reply.code(200).send({ id: existing.id, status: existing.status, confirmedAt: existing.confirmedAt });
+    }
+    if (existing.status === "CANCELLED") {
+      return reply.code(409).send({ error: "conflict", message: "sales order is cancelled" });
+    }
+
+const allowNegRow = await prisma.tenantSetting.findFirst({
       where: { tenantId },
       select: { allowNegativeStock: true },
     });
     const allowNegativeStock = Boolean(allowNegRow?.allowNegativeStock);
 
     const result = await prisma.$transaction(async (tx) => {
-      // Serialize confirm per (tenantId, salesOrderId)
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${id}));`;
-
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(), hashtext());`;
       const so = await tx.salesOrder.findFirst({
         where: { tenantId, id },
         include: { lines: true },
@@ -209,9 +218,8 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
 
       if (!so) return { kind: "not_found" as const };
       if (so.status === "CANCELLED") return { kind: "conflict" as const, message: "sales order is cancelled" };
-      if (so.status === "CONFIRMED") return { kind: "already" as const, so };
+      if (so.status === "CONFIRMED") return { kind: "conflict" as const, message: "sales order already confirmed" };
 
-      // Load item isStock flags for all line items (tenant-scoped)
       const itemIds = Array.from(new Set(so.lines.map((l: any) => l.itemId)));
       const items = await tx.item.findMany({
         where: { tenantId, id: { in: itemIds } },
@@ -219,7 +227,7 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
       });
       const isStockById = new Map(items.map((i: any) => [i.id, Boolean(i.isStock)]));
 
-      // Validate availability (only for stock items)
+      // Validate availability
       for (const ln of so.lines) {
         if (!isStockById.get(ln.itemId)) continue;
 
@@ -235,39 +243,25 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
         }
       }
 
-      // Create reservations (unique tenantId+salesOrderLineId). If already created, do nothing.
+      // Apply reservations
       for (const ln of so.lines) {
         if (!isStockById.get(ln.itemId)) continue;
 
-        let didCreate = false;
-        try {
-          await tx.inventoryReservation.create({
-            data: {
-              tenantId,
-              itemId: ln.itemId,
-              salesOrderId: so.id,
-              salesOrderLineId: ln.id,
-              qty: ln.qty,
-              status: "ACTIVE",
-            },
-          });
-          didCreate = true;
-        } catch (e: any) {
-          const code = e?.code ?? e?.cause?.code;
-          if (code === "P2002") didCreate = false;
-          else throw e;
-        }
+        await tx.inventoryBalance.updateMany({
+          where: { tenantId, itemId: ln.itemId },
+          data: { qtyReserved: { increment: ln.qty } },
+        });
 
-        if (didCreate) {
-          // Keep tenant isolation by filtering on tenantId + itemId (even though itemId is unique).
-          const upd = await tx.inventoryBalance.updateMany({
-            where: { tenantId, itemId: ln.itemId },
-            data: { qtyReserved: { increment: ln.qty } },
-          });
-          if (upd.count !== 1) {
-            return { kind: "bad_request" as const, message: `missing inventory balance for item ${ln.itemId}` };
-          }
-        }
+        await tx.inventoryReservation.create({
+          data: {
+            tenantId,
+            salesOrderId: so.id,
+            salesOrderLineId: ln.id,
+            itemId: ln.itemId,
+            qty: ln.qty,
+            status: "ACTIVE",
+          },
+        });
       }
 
       const updated = await tx.salesOrder.update({
@@ -284,7 +278,7 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
           entityId: so.id,
           ip: ipFromReq(req),
           userAgent: (req.headers["user-agent"] as string | undefined) ?? null,
-          meta: { linesCount: so.lines.length },
+          meta: {},
         },
       });
 
@@ -295,11 +289,10 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     if (result.kind === "conflict") return reply.code(409).send({ error: "conflict", message: result.message });
     if (result.kind === "bad_request") return reply.code(400).send({ error: "bad_request", message: result.message });
 
-    // already + ok both return 200 in your tests
-    return reply.code(200).send({ id: result.so.id, status: result.so.status, confirmedAt: result.so.confirmedAt });
+    return reply.send({ id: result.so.id, status: result.so.status, confirmedAt: result.so.confirmedAt });
   });
 
-  // CANCEL
+  // CANCEL (release reservations)
   app.post("/sales-orders/:id/cancel", async (req, reply) => {
     requireAuth(req);
 
@@ -307,17 +300,20 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     const userId = req.auth!.userId;
     const id = (req.params as any).id as string;
 
-    const result = await prisma.$transaction(async (tx) => {
-      // Serialize cancel per (tenantId, salesOrderId)
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${tenantId}), hashtext(${id}));`;
+    
+    const existing = await prisma.salesOrder.findFirst({
+      where: { tenantId, id },
+      select: { id: true, status: true, cancelledAt: true },
+    });
+    if (!existing) return reply.code(404).send({ error: "not_found" });
+    if (existing.status === "CANCELLED") {
+      return reply.code(200).send({ id: existing.id, status: existing.status, cancelledAt: existing.cancelledAt });
+    }
 
-      const so = await tx.salesOrder.findFirst({
-        where: { tenantId, id },
-        select: { id: true, status: true, cancelledAt: true },
-      });
-
+const result = await prisma.$transaction(async (tx) => {
+      const so = await tx.salesOrder.findFirst({ where: { tenantId, id } });
       if (!so) return { kind: "not_found" as const };
-      if (so.status === "CANCELLED") return { kind: "already" as const, so };
+      if (so.status === "CANCELLED") return { kind: "conflict" as const, message: "sales order already cancelled" };
 
       if (so.status === "DRAFT") {
         const updated = await tx.salesOrder.update({
@@ -334,14 +330,13 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
             entityId: so.id,
             ip: ipFromReq(req),
             userAgent: (req.headers["user-agent"] as string | undefined) ?? null,
-            meta: { fromStatus: "DRAFT" },
+            meta: {},
           },
         });
 
         return { kind: "ok" as const, so: updated };
       }
 
-      // CONFIRMED: release reservations
       const reservations = await tx.inventoryReservation.findMany({
         where: { tenantId, salesOrderId: so.id, status: "ACTIVE" },
         select: { itemId: true, qty: true },
@@ -349,25 +344,14 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
 
       const byItem = new Map<string, bigint>();
       for (const r of reservations) {
-        const cur = byItem.get(r.itemId) ?? 0n;
-        byItem.set(r.itemId, cur + BigInt(r.qty));
+        byItem.set(r.itemId, (byItem.get(r.itemId) ?? 0n) + BigInt(r.qty));
       }
 
       for (const [itemId, sumQty] of byItem.entries()) {
-        const bal = await tx.inventoryBalance.findFirst({
-          where: { tenantId, itemId },
-          select: { qtyReserved: true },
-        });
-        if (!bal) return { kind: "conflict" as const, message: `missing inventory balance for item ${itemId}` };
-        if (BigInt(bal.qtyReserved) < sumQty) {
-          return { kind: "conflict" as const, message: `cannot cancel; reserved underflow for item ${itemId}` };
-        }
-
-        const upd = await tx.inventoryBalance.updateMany({
+        await tx.inventoryBalance.updateMany({
           where: { tenantId, itemId },
           data: { qtyReserved: { decrement: sumQty } },
         });
-        if (upd.count !== 1) return { kind: "conflict" as const, message: `missing inventory balance for item ${itemId}` };
       }
 
       await tx.inventoryReservation.updateMany({
@@ -389,7 +373,7 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
           entityId: so.id,
           ip: ipFromReq(req),
           userAgent: (req.headers["user-agent"] as string | undefined) ?? null,
-          meta: { fromStatus: "CONFIRMED" },
+          meta: {},
         },
       });
 
@@ -399,7 +383,6 @@ export async function salesOrdersRoutes(app: FastifyInstance) {
     if (result.kind === "not_found") return reply.code(404).send({ error: "not_found" });
     if (result.kind === "conflict") return reply.code(409).send({ error: "conflict", message: result.message });
 
-    // already + ok both return 200 in your tests
-    return reply.code(200).send({ id: result.so.id, status: result.so.status, cancelledAt: result.so.cancelledAt });
+    return reply.send({ id: result.so.id, status: result.so.status, cancelledAt: result.so.cancelledAt });
   });
 }

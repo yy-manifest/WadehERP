@@ -1,0 +1,855 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2867
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;\f1\fnil\fcharset0 Menlo-Regular;}
+{\colortbl;\red255\green255\blue255;\red0\green0\blue0;}
+{\*\expandedcolortbl;;\csgray\c0;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 1A)    157	model SalesOrder \{\
+   158	  id          String           @id @default(cuid())\
+   159	  tenantId    String\
+   160	  status      SalesOrderStatus @default(DRAFT)\
+   161	  notes       String?\
+   162	  createdAt   DateTime         @default(now())\
+   163	  updatedAt   DateTime         @updatedAt\
+   164	  confirmedAt DateTime?\
+   165	  cancelledAt DateTime?\
+   166	\
+   167	  tenant       Tenant                 @relation(fields: [tenantId], references: [id])\
+   168	  lines        SalesOrderLine[]\
+   169	  reservations InventoryReservation[]\
+   170	\
+   171	  @@index([tenantId, createdAt])\
+   172	  @@index([tenantId, status])\
+   173	\}\
+   174	\
+   175	model SalesOrderLine \{\
+1B)    119	model InventoryBalance \{\
+   120	  id       String @id @default(cuid())\
+   121	  tenantId String\
+   122	  itemId   String @unique\
+   123	\
+   124	  // store as BigInt to avoid float issues\
+   125	  qtyOnHand    BigInt @default(0)\
+   126	  qtyReserved  BigInt @default(0)\
+   127	  avgCostMinor BigInt @default(0) // weighted average cost in minor units (cents/halalas/etc)\
+   128	\
+   129	  createdAt DateTime @default(now())\
+   130	  updatedAt DateTime @updatedAt\
+   131	\
+   132	  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)\
+   133	  item   Item   @relation(fields: [itemId], references: [id], onDelete: Cascade)\
+   134	\
+   135	  @@index([tenantId])\
+   136	\}\
+   137	\
+   138	model InventoryMovement \{\
+   139	  id       String            @id @default(cuid())\
+   140	  tenantId String\
+   141	  itemId   String\
+   142	  type     InventoryMoveType\
+   143	\
+   144	  qtyDelta      BigInt\
+   145	  unitCostMinor BigInt? // required for inbound adjustments, optional for outbound\
+   146	  note          String?\
+   147	\
+   148	  actorUserId String?\
+   149	  createdAt   DateTime @default(now())\
+   150	\
+   151	  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)\
+   152	  item   Item   @relation(fields: [itemId], references: [id], onDelete: Cascade)\
+   153	\
+   154	  @@index([tenantId, itemId, createdAt])\
+   155	\}\
+   156	\
+   157	model SalesOrder \{\
+   158	  id          String           @id @default(cuid())\
+   159	  tenantId    String\
+   160	  status      SalesOrderStatus @default(DRAFT)\
+   161	  notes       String?\
+   162	  createdAt   DateTime         @default(now())\
+   163	  updatedAt   DateTime         @updatedAt\
+   164	  confirmedAt DateTime?\
+   165	  cancelledAt DateTime?\
+   166	\
+   167	  tenant       Tenant                 @relation(fields: [tenantId], references: [id])\
+   168	  lines        SalesOrderLine[]\
+   169	  reservations InventoryReservation[]\
+   170	\
+   171	  @@index([tenantId, createdAt])\
+   172	  @@index([tenantId, status])\
+   173	\}\
+   174	\
+   175	model SalesOrderLine \{\
+   176	  id           String   @id @default(cuid())\
+   177	  tenantId     String\
+   178	  salesOrderId String\
+   179	  itemId       String\
+   180	  qty          BigInt\
+   181	  createdAt    DateTime @default(now())\
+   182	\
+   183	  salesOrder   SalesOrder             @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)\
+   184	  item         Item                   @relation(fields: [itemId], references: [id])\
+   185	  reservations InventoryReservation[]\
+   186	\
+   187	  @@index([tenantId, salesOrderId])\
+   188	  @@index([tenantId, itemId])\
+   189	\}\
+   190	\
+   191	model InventoryReservation \{\
+\
+2) 
+\f1\fs22 \cf2 \CocoaLigature0 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+import type \{ FastifyRequest \} from "fastify";\
+import \{ prisma \} from "../db";\
+import \{ sha256Hex \} from "./crypto";\
+\
+export async function attachAuth(req: FastifyRequest) \{\
+  const header = req.headers["authorization"];\
+  if (!header) return;\
+\
+  const m = /^Bearer\\s+(.+)$/.exec(header);\
+  if (!m) return;\
+\
+  const token = m[1]?.trim();\
+  if (!token) return;\
+\
+  const tokenHash = sha256Hex(token);\
+  const session = await prisma.session.findUnique(\{\
+    where: \{ tokenHash \},\
+    include: \{ user: true \},\
+  \});\
+\
+  if (!session) return;\
+  if (session.revokedAt) return;\
+  if (new Date() > session.expiresAt) return;\
+\
+  req.auth = \{\
+    userId: session.userId,\
+    tenantId: session.tenantId,\
+    sessionId: session.id,\
+  \};\
+\}\
+\
+export function requireAuth(req: FastifyRequest) \{\
+  if (!req.auth) \{\
+    const err: any = new Error("unauthorized");\
+    err.statusCode = 401;\
+    throw err;\
+  \}\
+\}\
+3)   app.setErrorHandler((err: any, _req, reply) => \{\
+    // Validation errors -> 400 with structured issues\
+    if (err instanceof ZodError) \{\
+      return reply.code(400).send(\{\
+        error: "validation_error",\
+        issues: err.issues,\
+      \});\
+    \}\
+\
+    // Known app errors\
+    const statusCode = err?.statusCode ?? 500;\
+\
+    // Never leak internal stack traces/messages in 500s\
+    if (statusCode >= 500) \{\
+      return reply.code(500).send(\{ error: "internal_error" \});\
+4) 1	import type \{ FastifyInstance \} from "fastify";\
+     2	import \{ z \} from "zod";\
+     3	import \{ prisma \} from "../db";\
+     4	import \{ requireAuth \} from "../lib/auth";\
+     5	\
+     6	function toBigInt(n: unknown) \{\
+     7	  if (typeof n === "bigint") return n;\
+     8	  if (typeof n === "number") return BigInt(Math.trunc(n));\
+     9	  if (typeof n === "string" && n.trim() !== "") return BigInt(n);\
+    10	  throw new Error("invalid_number");\
+    11	\}\
+    12	\
+    13	const AdjustBody = z.object(\{\
+    14	  itemId: z.string().min(1),\
+    15	  qtyDelta: z.union([z.number(), z.string()]), // allow "5" or 5\
+    16	  unitCostMinor: z.union([z.number(), z.string()]).optional(), // required if qtyDelta > 0\
+    17	  note: z.string().max(500).optional(),\
+    18	\});\
+    19	\
+    20	const ItemIdParams = z.object(\{\
+    21	  itemId: z.string().min(1),\
+    22	\});\
+    23	\
+    24	const MovementsQuery = z.object(\{\
+    25	  limit: z\
+    26	    .union([z.string(), z.number()])\
+    27	    .optional()\
+    28	    .transform((v) => \{\
+    29	      if (v === undefined) return 50;\
+    30	      const n = typeof v === "number" ? v : Number(v);\
+    31	      if (!Number.isFinite(n)) return 50;\
+    32	      return Math.max(1, Math.min(100, Math.trunc(n)));\
+    33	    \}),\
+    34	\});\
+    35	\
+    36	export async function inventoryRoutes(app: FastifyInstance) \{\
+    37	  // Read: balance\
+    38	  app.get("/items/:itemId/balance", async (req, reply) => \{\
+    39	    requireAuth(req);\
+    40	\
+    41	    const tenantId = req.auth!.tenantId;\
+    42	    const \{ itemId \} = ItemIdParams.parse(req.params);\
+    43	\
+    44	    const item = await prisma.item.findFirst(\{\
+    45	      where: \{ id: itemId, tenantId \},\
+    46	      select: \{ id: true, isStock: true \},\
+    47	    \});\
+    48	\
+    49	    if (!item) return reply.code(404).send(\{ error: "item_not_found" \});\
+    50	    if (!item.isStock) return reply.code(400).send(\{ error: "item_is_not_stock_tracked" \});\
+    51	\
+    52	    const bal = await prisma.inventoryBalance.findFirst(\{\
+    53	      where: \{ tenantId, itemId \},\
+    54	      select: \{ qtyOnHand: true, avgCostMinor: true, updatedAt: true \},\
+    55	    \});\
+    56	\
+    57	    if (!bal) return reply.code(500).send(\{ error: "inventory_balance_missing" \});\
+    58	\
+    59	    return reply.code(200).send(\{\
+    60	      balance: \{\
+    61	        itemId,\
+    62	        qtyOnHand: bal.qtyOnHand.toString(),\
+    63	        avgCostMinor: bal.avgCostMinor.toString(),\
+    64	        updatedAt: bal.updatedAt,\
+    65	      \},\
+    66	    \});\
+    67	  \});\
+    68	\
+    69	  // Read: movements (newest first)\
+    70	  app.get("/items/:itemId/movements", async (req, reply) => \{\
+    71	    requireAuth(req);\
+    72	\
+    73	    const tenantId = req.auth!.tenantId;\
+    74	    const \{ itemId \} = ItemIdParams.parse(req.params);\
+    75	    const \{ limit \} = MovementsQuery.parse(req.query ?? \{\});\
+    76	\
+    77	    const item = await prisma.item.findFirst(\{\
+    78	      where: \{ id: itemId, tenantId \},\
+    79	      select: \{ id: true, isStock: true \},\
+    80	    \});\
+    81	\
+    82	    if (!item) return reply.code(404).send(\{ error: "item_not_found" \});\
+    83	    if (!item.isStock) return reply.code(400).send(\{ error: "item_is_not_stock_tracked" \});\
+    84	\
+    85	    const moves = await prisma.inventoryMovement.findMany(\{\
+    86	      where: \{ tenantId, itemId \},\
+    87	      orderBy: \{ createdAt: "desc" \},\
+    88	      take: limit,\
+    89	      select: \{\
+    90	        id: true,\
+    91	        type: true,\
+    92	        qtyDelta: true,\
+    93	        unitCostMinor: true,\
+    94	        note: true,\
+    95	        actorUserId: true,\
+    96	        createdAt: true,\
+    97	      \},\
+    98	    \});\
+    99	\
+5) import \{ beforeAll, afterAll, beforeEach, describe, expect, it \} from "vitest";\
+import \{ closeAll, makeApp, resetDb \} from "./_helpers";\
+\
+function randEmail() \{\
+  return `u$\{Math.random().toString(16).slice(2)\}@example.com`;\
+\}\
+\
+describe("M0.3A Sales Orders (reservations)", () => \{\
+  let app: Awaited<ReturnType<typeof makeApp>>;\
+\
+  beforeAll(async () => \{\
+    app = await makeApp();\
+  \});\
+\
+  beforeEach(async () => \{\
+    await resetDb();\
+  \});\
+\
+  afterAll(async () => \{\
+    await closeAll(app);\
+  \});\
+\
+  async function signup() \{\
+    const res = await app.inject(\{\
+      method: "POST",\
+      url: "/auth/signup",\
+      payload: \{ email: randEmail(), password: "Password123!" \},\
+    \});\
+\
+    expect(res.statusCode).toBe(201);\
+    const j = res.json() as any;\
+\
+    const token = j?.session?.token as string;\
+    expect(token).toBeTypeOf("string");\
+\
+    return token;\
+  \}\
+\
+  async function createStockItem(token: string) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/items",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{\
+        sku: `SKU-$\{Math.random().toString(16).slice(2)\}`,\
+        nameEn: "Item",\
+        nameAr: "Item",\
+        isStock: true,\
+      \},\
+    \});\
+\
+    expect(r.statusCode).toBe(201);\
+    const j = r.json() as any;\
+\
+    const itemId = j?.item?.id as string;\
+    expect(itemId).toBeTypeOf("string");\
+\
+    return itemId;\
+  \}\
+\
+  async function inboundAdjust(token: string, itemId: string, qty: number, unitCostMinor: number, note = "init") \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/inventory/adjust",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ itemId, qtyDelta: qty, unitCostMinor, note \},\
+    \});\
+\
+    if (r.statusCode !== 200) \{\
+      throw new Error("inventory/adjust failed: " + r.statusCode + " " + r.body);\
+    \}\
+  \}\
+\
+  async function createSO(token: string, lines: Array<\{ itemId: string; qty: number \}>) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/sales-orders",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ lines \},\
+    \});\
+\
+    if (r.statusCode !== 201) \{\
+      throw new Error("sales-orders create failed: " + r.statusCode + " " + r.body);\
+    \}\
+\
+    const j = r.json() as any;\
+    const id = (j?.salesOrder?.id ?? j?.id) as string;\
+    if (typeof id !== "string") throw new Error("sales-orders create missing id: " + JSON.stringify(j));\
+\
+    return id;\
+  \}\
+\
+  it("reserves stock on confirm; blocks oversell when allowNegativeStock=false (default)", async () => \{\
+    const token = await signup();\
+\
+    const itemId = await createStockItem(token);\
+    await inboundAdjust(token, itemId, 10, 1000, "init");\
+\
+    const so1 = await createSO(token, [\{ itemId, qty: 7 \}]);\
+\
+    const c1 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so1\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+\
+    expect(c1.statusCode).toBe(200);\
+    expect((c1.json() as any).status).toBe("CONFIRMED");\
+    const so2 = await createSO(token, [\{ itemId, qty: 4 \}]);\
+\
+    const c2 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so2\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+\
+    expect(c2.statusCode).toBe(400);\
+  \});\
+\
+  it("allowNegativeStock=true allows confirm even if it oversells available stock", async () => \{\
+    const token = await signup();\
+\
+    const itemId = await createStockItem(token);\
+    await inboundAdjust(token, itemId, 10, 1000, "init");\
+\
+    const so1 = await createSO(token, [\{ itemId, qty: 9 \}]);\
+\
+    const c1 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so1\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(c1.statusCode).toBe(200);\
+\
+    const set = await app.inject(\{\
+      method: "PUT",\
+      url: "/settings/tenant",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ allowNegativeStock: true \},\
+    \});\
+    expect(set.statusCode).toBe(200);\
+\
+    const so2 = await createSO(token, [\{ itemId, qty: 9 \}]);\
+\
+    const c2 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so2\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(c2.statusCode).toBe(200);\
+  \});\
+\
+  it("cancel releases reservations (confirmed -> cancelled), enabling subsequent confirm without oversell", async () => \{\
+    const token = await signup();\
+\
+    const itemId = await createStockItem(token);\
+    await inboundAdjust(token, itemId, 10, 1000, "init");\
+\
+    const so1 = await createSO(token, [\{ itemId, qty: 7 \}]);\
+\
+    const c1 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so1\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(c1.statusCode).toBe(200);\
+\
+    const x = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so1\}/cancel`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(x.statusCode).toBe(200);\
+\
+    const so2 = await createSO(token, [\{ itemId, qty: 10 \}]);\
+\
+    const c2 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so2\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(c2.statusCode).toBe(200);\
+  \});\
+\
+  it("tenant isolation: other tenant cannot read/confirm/cancel your sales order", async () => \{\
+    const token1 = await signup();\
+    const token2 = await signup();\
+\
+    const itemId = await createStockItem(token1);\
+    await inboundAdjust(token1, itemId, 10, 1500, "init");\
+\
+    const so1 = await createSO(token1, [\{ itemId, qty: 3 \}]);\
+\
+    const rGet = await app.inject(\{\
+      method: "GET",\
+      url: `/sales-orders/$\{so1\}`,\
+      headers: \{ authorization: `Bearer $\{token2\}` \},\
+    \});\
+    expect(rGet.statusCode).toBe(404);\
+\
+    const rConfirm = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so1\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token2\}` \},\
+    \});\
+    expect(rConfirm.statusCode).toBe(404);\
+\
+    const rCancel = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{so1\}/cancel`,\
+      headers: \{ authorization: `Bearer $\{token2\}` \},\
+    \});\
+    expect(rCancel.statusCode).toBe(404);\
+  \});\
+\});\
+import \{ beforeAll, afterAll, beforeEach, describe, expect, it \} from "vitest";\
+import \{ closeAll, makeApp, resetDb \} from "./_helpers";\
+\
+function randEmail() \{\
+  return `u$\{Math.random().toString(16).slice(2)\}@example.com`;\
+\}\
+\
+function pickSO(j: any) \{\
+  return (j?.salesOrder ?? j) as any;\
+\}\
+\
+describe("M0.3B Sales Orders reads", () => \{\
+  let app: Awaited<ReturnType<typeof makeApp>>;\
+\
+  beforeAll(async () => \{\
+    app = await makeApp();\
+  \});\
+\
+  beforeEach(async () => \{\
+    await resetDb();\
+  \});\
+\
+  afterAll(async () => \{\
+    await closeAll(app);\
+  \});\
+\
+  async function signup() \{\
+    const res = await app.inject(\{\
+      method: "POST",\
+      url: "/auth/signup",\
+      payload: \{ email: randEmail(), password: "Password123!" \},\
+    \});\
+    expect(res.statusCode).toBe(201);\
+    return (res.json() as any).session.token as string;\
+  \}\
+\
+  async function createStockItem(token: string) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/items",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ sku: `SKU-$\{Math.random().toString(16).slice(2)\}`, nameEn: "Item", nameAr: "Item", isStock: true \},\
+    \});\
+    expect(r.statusCode).toBe(201);\
+    return (r.json() as any).item.id as string;\
+  \}\
+\
+  async function inboundAdjust(token: string, itemId: string, qty: number, unitCostMinor: number) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/inventory/adjust",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ itemId, qtyDelta: qty, unitCostMinor, note: "init" \},\
+    \});\
+    expect(r.statusCode).toBe(200);\
+  \}\
+\
+  async function createSO(token: string, lines: Array<\{ itemId: string; qty: number \}>) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/sales-orders",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ lines \},\
+    \});\
+    expect(r.statusCode).toBe(201);\
+\
+    const j = r.json() as any;\
+    const so = pickSO(j);\
+    const id = so?.id as string;\
+\
+    expect(id).toBeTypeOf("string");\
+    return id;\
+  \}\
+\
+  it("GET /sales-orders/:id includes lines + reservation state after confirm/cancel", async () => \{\
+    const token = await signup();\
+    const itemId = await createStockItem(token);\
+    await inboundAdjust(token, itemId, 10, 1000);\
+\
+    const soId = await createSO(token, [\{ itemId, qty: 3 \}]);\
+\
+    const c = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{soId\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(c.statusCode).toBe(200);\
+\
+    const g1 = await app.inject(\{\
+      method: "GET",\
+      url: `/sales-orders/$\{soId\}`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(g1.statusCode).toBe(200);\
+    const so1 = pickSO(g1.json() as any);\
+\
+    expect(so1.status).toBe("CONFIRMED");\
+    expect(so1.lines[0].itemId).toBe(itemId);\
+    expect(so1.lines[0].reservedQty).toBe("3");\
+    expect(so1.lines[0].reservationStatus).toBe("ACTIVE");\
+\
+    const x = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{soId\}/cancel`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(x.statusCode).toBe(200);\
+\
+    const g2 = await app.inject(\{\
+      method: "GET",\
+      url: `/sales-orders/$\{soId\}`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(g2.statusCode).toBe(200);\
+    const so2 = pickSO(g2.json() as any);\
+\
+    expect(so2.status).toBe("CANCELLED");\
+    expect(so2.lines[0].reservedQty).toBe("0");\
+    expect(so2.lines[0].reservationStatus).toBe("CANCELLED");\
+  \});\
+\
+  it("GET /sales-orders list returns tenant-scoped results", async () => \{\
+    const t1 = await signup();\
+    const t2 = await signup();\
+\
+    const itemId = await createStockItem(t1);\
+    await inboundAdjust(t1, itemId, 10, 1000);\
+    await createSO(t1, [\{ itemId, qty: 2 \}]);\
+\
+    const l1 = await app.inject(\{\
+      method: "GET",\
+      url: "/sales-orders?limit=20",\
+      headers: \{ authorization: `Bearer $\{t1\}` \},\
+    \});\
+    expect(l1.statusCode).toBe(200);\
+    expect((l1.json() as any).items.length).toBe(1);\
+\
+    const l2 = await app.inject(\{\
+      method: "GET",\
+      url: "/sales-orders?limit=20",\
+      headers: \{ authorization: `Bearer $\{t2\}` \},\
+    \});\
+    expect(l2.statusCode).toBe(200);\
+    expect((l2.json() as any).items.length).toBe(0);\
+  \});\
+\});\
+import \{ beforeAll, afterAll, beforeEach, describe, expect, it \} from "vitest";\
+import \{ closeAll, makeApp, resetDb \} from "./_helpers";\
+\
+function randEmail() \{\
+  return `u$\{Math.random().toString(16).slice(2)\}@example.com`;\
+\}\
+\
+describe("M0.3C Sales Orders reservation integrity", () => \{\
+  let app: Awaited<ReturnType<typeof makeApp>>;\
+\
+  beforeAll(async () => \{\
+    app = await makeApp();\
+  \});\
+\
+  beforeEach(async () => \{\
+    await resetDb();\
+  \});\
+\
+  afterAll(async () => \{\
+    await closeAll(app);\
+  \});\
+\
+  async function signup() \{\
+    const res = await app.inject(\{\
+      method: "POST",\
+      url: "/auth/signup",\
+      payload: \{ email: randEmail(), password: "Password123!" \},\
+    \});\
+    expect(res.statusCode).toBe(201);\
+    return (res.json() as any).session.token as string;\
+  \}\
+\
+  async function createStockItem(token: string) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/items",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ sku: `SKU-$\{Math.random().toString(16).slice(2)\}`, nameEn: "Item", nameAr: "Item", isStock: true \},\
+    \});\
+    expect(r.statusCode).toBe(201);\
+    return (r.json() as any).item.id as string;\
+  \}\
+\
+  async function inboundAdjust(token: string, itemId: string, qty: number, unitCostMinor: number) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/inventory/adjust",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ itemId, qtyDelta: qty, unitCostMinor, note: "init" \},\
+    \});\
+    expect(r.statusCode).toBe(200);\
+  \}\
+\
+  async function availability(token: string, itemId: string) \{\
+    const r = await app.inject(\{\
+      method: "GET",\
+      url: `/items/$\{itemId\}/availability`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(r.statusCode).toBe(200);\
+    return r.json() as any;\
+  \}\
+\
+  async function createSO(token: string, lines: Array<\{ itemId: string; qty: number \}>) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/sales-orders",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ lines \},\
+    \});\
+    expect(r.statusCode).toBe(201);\
+    const j = r.json() as any;\
+    const id = (j?.salesOrder?.id ?? j?.id) as string;\
+    expect(id).toBeTypeOf("string");\
+    return id;\
+  \}\
+\
+  it("confirm is idempotent (no double-reserve); cancel is idempotent (no double-release)", async () => \{\
+    const token = await signup();\
+    const itemId = await createStockItem(token);\
+    await inboundAdjust(token, itemId, 10, 1000);\
+\
+    const soId = await createSO(token, [\{ itemId, qty: 3 \}]);\
+\
+    const c1 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{soId\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(c1.statusCode).toBe(200);\
+\
+    const a1 = await availability(token, itemId);\
+    expect(a1.qtyOnHand).toBe("10");\
+    expect(a1.qtyReserved).toBe("3");\
+    expect(a1.qtyAvailable).toBe("7");\
+\
+    const c2 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{soId\}/confirm`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(c2.statusCode).toBe(200);\
+\
+    const a2 = await availability(token, itemId);\
+    expect(a2.qtyReserved).toBe("3");\
+    expect(a2.qtyAvailable).toBe("7");\
+\
+    const x1 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{soId\}/cancel`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(x1.statusCode).toBe(200);\
+\
+    const a3 = await availability(token, itemId);\
+    expect(a3.qtyReserved).toBe("0");\
+    expect(a3.qtyAvailable).toBe("10");\
+\
+    const x2 = await app.inject(\{\
+      method: "POST",\
+      url: `/sales-orders/$\{soId\}/cancel`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(x2.statusCode).toBe(200);\
+\
+    const a4 = await availability(token, itemId);\
+    expect(a4.qtyReserved).toBe("0");\
+    expect(a4.qtyAvailable).toBe("10");\
+  \});\
+\});\
+import \{ beforeAll, afterAll, beforeEach, describe, expect, it \} from "vitest";\
+import \{ closeAll, makeApp, resetDb \} from "./_helpers";\
+\
+function randEmail() \{\
+  return `u$\{Math.random().toString(16).slice(2)\}@example.com`;\
+\}\
+\
+function jsonOrBody(res: any) \{\
+  try \{\
+    return res.headers?.["content-type"]?.includes("application/json") ? res.json() : res.body;\
+  \} catch \{\
+    return res.body;\
+  \}\
+\}\
+\
+describe("M0.3D Sales Orders confirm concurrency", () => \{\
+  let app: Awaited<ReturnType<typeof makeApp>>;\
+\
+  beforeAll(async () => \{\
+    app = await makeApp();\
+  \});\
+\
+  beforeEach(async () => \{\
+    await resetDb();\
+  \});\
+\
+  afterAll(async () => \{\
+    await closeAll(app);\
+  \});\
+\
+  async function signup() \{\
+    const res = await app.inject(\{\
+      method: "POST",\
+      url: "/auth/signup",\
+      payload: \{ email: randEmail(), password: "Password123!" \},\
+    \});\
+    expect(res.statusCode).toBe(201);\
+    return (res.json() as any).session.token as string;\
+  \}\
+\
+  async function createStockItem(token: string) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/items",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ sku: `SKU-$\{Math.random().toString(16).slice(2)\}`, nameEn: "Item", nameAr: "Item", isStock: true \},\
+    \});\
+    expect(r.statusCode).toBe(201);\
+    return (r.json() as any).item.id as string;\
+  \}\
+\
+  async function inboundAdjust(token: string, itemId: string, qty: number, unitCostMinor: number) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/inventory/adjust",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ itemId, qtyDelta: qty, unitCostMinor, note: "init" \},\
+    \});\
+    expect(r.statusCode).toBe(200);\
+  \}\
+\
+  async function createSO(token: string, lines: Array<\{ itemId: string; qty: number \}>) \{\
+    const r = await app.inject(\{\
+      method: "POST",\
+      url: "/sales-orders",\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+      payload: \{ lines \},\
+    \});\
+    expect(r.statusCode).toBe(201);\
+    const j = r.json() as any;\
+    return (j?.salesOrder?.id ?? j?.id) as string;\
+  \}\
+\
+  it("parallel confirms do not double-reserve", async () => \{\
+    const token = await signup();\
+    const itemId = await createStockItem(token);\
+    await inboundAdjust(token, itemId, 10, 1000);\
+\
+    const soId = await createSO(token, [\{ itemId, qty: 3 \}]);\
+\
+    const confirm = () =>\
+      app.inject(\{\
+        method: "POST",\
+        url: `/sales-orders/$\{soId\}/confirm`,\
+        headers: \{ authorization: `Bearer $\{token\}` \},\
+      \});\
+\
+    const [a, b] = await Promise.all([confirm(), confirm()]);\
+\
+    // With advisory lock + idempotent confirm, BOTH should be 200.\
+    if (a.statusCode !== 200 || b.statusCode !== 200) \{\
+      throw new Error(\
+        `unexpected confirm statuses: A=$\{a.statusCode\} body=$\{JSON.stringify(jsonOrBody(a))\} | B=$\{b.statusCode\} body=$\{JSON.stringify(\
+          jsonOrBody(b)\
+        )\}`\
+      );\
+    \}\
+\
+    const avail = await app.inject(\{\
+      method: "GET",\
+      url: `/items/$\{itemId\}/availability`,\
+      headers: \{ authorization: `Bearer $\{token\}` \},\
+    \});\
+    expect(avail.statusCode).toBe(200);\
+    const j = avail.json() as any;\
+    expect(j.qtyReserved).toBe("3");\
+    expect(j.qtyAvailable).toBe("7");\
+  \});\
+}
