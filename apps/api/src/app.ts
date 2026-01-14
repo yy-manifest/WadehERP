@@ -11,6 +11,7 @@ import { itemRoutes } from "./routes/items";
 import { inventoryRoutes } from "./routes/inventory";
 import { availabilityRoutes } from "./routes/availability";
 import { settingsRoutes } from "./routes/settings";
+import { invoicesRoutes } from "./routes/invoices";
 import { salesOrdersRoutes } from "./routes/sales_orders";
 function getLoggerConfig() {
   // Tests: no logger to keep output clean and avoid transports
@@ -62,6 +63,7 @@ export function buildApp() {
   app.register(availabilityRoutes);
   app.register(settingsRoutes);
   app.register(salesOrdersRoutes);
+  app.register(invoicesRoutes);
 
 
   return app;

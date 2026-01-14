@@ -31,6 +31,8 @@ model Tenant {
   inventoryMovements    InventoryMovement[]
   salesOrders           SalesOrder[]
   inventoryReservations InventoryReservation[]
+  invoices              Invoice[]
+  payments              Payment[]
 }
 
 model User {
@@ -111,6 +113,7 @@ model Item {
   moves                 InventoryMovement[]
   salesOrderLines       SalesOrderLine[]
   inventoryReservations InventoryReservation[]
+  invoiceLines          InvoiceLine[]
 
   @@unique([tenantId, sku])
   @@index([tenantId])
@@ -167,6 +170,7 @@ model SalesOrder {
   tenant       Tenant                 @relation(fields: [tenantId], references: [id])
   lines        SalesOrderLine[]
   reservations InventoryReservation[]
+  invoices     Invoice[]
 
   @@index([tenantId, createdAt])
   @@index([tenantId, status])
@@ -204,7 +208,71 @@ model InventoryReservation {
   salesOrderLine SalesOrderLine @relation(fields: [salesOrderLineId], references: [id], onDelete: Cascade)
   item           Item           @relation(fields: [itemId], references: [id])
 
-@@unique([tenantId, salesOrderLineId], name: "uniq_reservation_line")
+  @@unique([tenantId, salesOrderLineId], name: "uniq_reservation_line")
   @@index([tenantId, itemId])
   @@index([tenantId, salesOrderId])
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  VOID
+}
+
+model Invoice {
+  id         String        @id @default(cuid())
+  tenantId   String
+  status     InvoiceStatus @default(UNPAID)
+  notes      String?
+  totalMinor BigInt        @default(0)
+  paidMinor  BigInt        @default(0)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  voidedAt   DateTime?
+
+  salesOrderId String?
+  salesOrder   SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lines    InvoiceLine[]
+  payments Payment[]
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status])
+  @@index([tenantId, salesOrderId])
+}
+
+model InvoiceLine {
+  id             String   @id @default(cuid())
+  tenantId       String
+  invoiceId      String
+  itemId         String
+  qty            BigInt
+  unitPriceMinor BigInt
+  lineTotalMinor BigInt
+  createdAt      DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  item    Item    @relation(fields: [itemId], references: [id])
+
+  @@index([tenantId, invoiceId])
+  @@index([tenantId, itemId])
+}
+
+model Payment {
+  id          String   @id @default(cuid())
+  tenantId    String
+  invoiceId   String
+  amountMinor BigInt
+  method      String?
+  reference   String?
+  note        String?
+  actorUserId String?
+  createdAt   DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, invoiceId, createdAt])
 }
